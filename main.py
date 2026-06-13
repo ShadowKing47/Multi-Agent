@@ -115,11 +115,8 @@ def run_simulation(
                 continue
 
             wake = agent.definition.typical_wake_time
-            at_wake = (
-                current_time.time().hour   == wake.hour
-                and current_time.time().minute == wake.minute
-            )
-            if at_wake and not agent.state.current_plan:
+            past_wake = current_time.time() >= wake
+            if past_wake and not agent.state.current_plan:
                 agent.plan(current_time)
 
             _apply_current_plan_item(agent, current_time)
@@ -162,7 +159,8 @@ def main() -> None:
     lena = GenerativeAgent(LENA_DEFINITION, lena_state, lena_memory, llm_router)
 
     # 5. Seed memories — guard prevents duplicates on restart
-    start_time = datetime.now()
+    # Start at 06:00 game-time so both agents' wake times fall within the simulation window
+    start_time = datetime.now().replace(hour=6, minute=0, second=0, microsecond=0)
     if aris_memory.collection.count() == 0:
         for mem in ARIS_DEFINITION.seed_memories:
             aris_memory.add_memory(mem, start_time, is_seed=True)
