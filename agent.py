@@ -34,14 +34,16 @@ class GenerativeAgent:
         context  = "\n".join(f"- {m}" for m in memories)
         sleep_time = self.definition.typical_sleep_time.strftime("%H:%M")
 
+        wake_time = self.definition.typical_wake_time.strftime("%H:%M")
         prompt = (
             f"You are {self.definition.name}, age {self.definition.age}, "
             f"{self.definition.occupation}. "
             f"Traits: {', '.join(self.definition.core_traits)}. "
             f"Lifestyle: {self.definition.lifestyle}.\n"
-            f"Current time: {current_time.strftime('%H:%M')}. You sleep at {sleep_time}.\n\n"
+            f"Current time: {current_time.strftime('%H:%M')}.\n\n"
             f"Your recent memories:\n{context}\n\n"
             f"Generate your schedule from now until sleep time as a JSON array. "
+            f"You MUST wake up at or around {wake_time} and MUST go to sleep at or around {sleep_time}. "
             f"Each item must have keys: "
             f"\"time\" (HH:MM), \"action\" (string), \"location\" (string), \"duration_minutes\" (int). "
             f"Return only the JSON array. No commentary."
