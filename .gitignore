@@ -1,3 +1,5 @@
-__pycache__
+__pycache__/
+*.pyc
 .env
-trash/
+chroma_db/
+.DS_Store
