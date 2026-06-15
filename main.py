@@ -1,15 +1,12 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import chromadb
 from loguru import logger
 
-from constants import (
-    CHROMA_PERSIST_PATH,
-    DIALOGUE_ROUNDS_MAX,
-    TICK_SIZE_MINUTES,
-)
-from models import PersonaDefinition, PersonaState
+from constants import CHROMA_PERSIST_PATH, MAX_REFINEMENT_ROUNDS, DEBATE_ROUNDS_MAX
+from typing import Dict
+from models import PersonaDefinition, PersonaState, Poem, DebateRound
 from llm_router import LLMRouter
 from memory import MemoryStream
 from agent import GenerativeAgent
@@ -19,122 +16,114 @@ from agent import GenerativeAgent
 # Persona definitions
 # ---------------------------------------------------------------------------
 
-ARIS_DEFINITION = PersonaDefinition(
-    agent_id="dr_aris_thorne",
-    name="Dr. Aris Thorne",
-    age=62,
-    occupation="Historian and Author",
-    core_traits=["meticulous", "introverted", "intellectual"],
-    lifestyle="early riser, prefers quiet environments",
+POET_DEFINITION = PersonaDefinition(
+    agent_id="eliot_vane",
+    name="Eliot Vane",
+    age=34,
+    occupation="Poet",
+    core_traits=["introspective", "passionate", "stubborn about his artistic vision"],
+    lifestyle="writes late into the night, draws from personal grief and wonder",
     seed_memories=[
-        "Dr. Aris Thorne is a historian who specializes in medieval European economics.",
-        "Aris lives alone in his apartment with his cat, Empress.",
-        "Aris spends most of his time at the City Archive researching his new book.",
-        "Aris finds loud environments distracting and avoids the local cafe during peak hours.",
-        "Aris knows Lena Castillo, the barista, because she saves a quiet corner table for him in the mornings.",
+        "Eliot Vane is a poet known for spare, imagistic verse about loss and the natural world.",
+        "Eliot believes a poem should feel inevitable — every word earns its place or gets cut.",
+        "Eliot has been told his work is too obscure, but he distrusts poetry that explains itself.",
+        "Eliot's last collection was praised for its restraint and criticized for its coldness.",
+        "Eliot is protective of his drafts and does not revise lightly.",
     ],
-    starting_location="Thorne Apartment: Study",
-    typical_wake_time="06:00:00",
-    typical_sleep_time="22:00:00",
+    starting_location="Vane Studio",
+    typical_wake_time="09:00:00",
+    typical_sleep_time="02:00:00",
 )
 
-LENA_DEFINITION = PersonaDefinition(
-    agent_id="lena_castillo",
-    name="Lena Castillo",
-    age=24,
-    occupation="Barista and Community Organizer",
-    core_traits=["energetic", "extroverted", "scattered"],
-    lifestyle="night owl, thrives on social interaction",
+CRITIC_DEFINITION = PersonaDefinition(
+    agent_id="dr_mara_chen",
+    name="Dr. Mara Chen",
+    age=47,
+    occupation="Literary Critic and Professor of Poetics",
+    core_traits=["precise", "demanding", "deeply well-read", "fair but unsparing"],
+    lifestyle="reads widely, values clarity without simplicity, dislikes sentimentality",
     seed_memories=[
-        "Lena Castillo works as a barista at The Daily Grind Cafe.",
-        "Lena is organizing a community poetry night for this upcoming Friday.",
-        "Lena lives with two roommates in a downtown loft.",
-        "Lena gets easily distracted by conversations and often loses track of time.",
-        "Lena knows Dr. Aris Thorne as a regular customer who likes quiet and black coffee.",
+        "Dr. Mara Chen teaches contemporary poetics and has reviewed work for literary journals for 20 years.",
+        "Mara believes the critic's job is to hold the work to the highest standard the poet is capable of.",
+        "Mara values compression, surprise, and earned emotion — she is impatient with decoration.",
+        "Mara has reviewed Eliot Vane's previous collection and found it promising but uneven.",
+        "Mara gives praise sparingly but means it when she does.",
     ],
-    starting_location="Castillo Loft: Kitchen",
-    typical_wake_time="08:30:00",
-    typical_sleep_time="01:00:00",
+    starting_location="Chen Office",
+    typical_wake_time="07:00:00",
+    typical_sleep_time="23:00:00",
 )
 
 
 # ---------------------------------------------------------------------------
-# Simulation helpers
+# Workshop loop
 # ---------------------------------------------------------------------------
 
-def _apply_current_plan_item(agent: GenerativeAgent, current_time: datetime) -> None:
-    """Set agent's current_action and current_location from the active plan item."""
-    if not agent.state.current_plan:
-        return
-    time_str = current_time.strftime("%H:%M")
-    for item in reversed(agent.state.current_plan):
-        if item["time"] <= time_str:
-            agent.state.current_action   = item["action"]
-            agent.state.current_location = item["location"]
-            end = current_time + timedelta(minutes=item.get("duration_minutes", TICK_SIZE_MINUTES))
-            agent.state.current_action_end_time = end
-            return
-
-
-def _handle_co_location(
-    aris: GenerativeAgent,
-    lena: GenerativeAgent,
+def run_poetry_workshop(
+    poet: GenerativeAgent,
+    critic: GenerativeAgent,
+    theme: str,
     current_time: datetime,
-) -> None:
-    """Inject cross-agent observations and run up to DIALOGUE_ROUNDS_MAX exchange rounds."""
-    aris_obs = f"{lena.definition.name} is here at {aris.state.current_location}."
-    lena_obs = f"{aris.definition.name} is here at {lena.state.current_location}."
+) -> Poem:
+    logger.info(f"=== Poetry Workshop | Theme: '{theme}' ===")
 
-    for _ in range(DIALOGUE_ROUNDS_MAX):
-        aris_response = aris.react(aris_obs, current_time)
-        lena_response = lena.react(lena_obs, current_time)
+    poem = poet.compose_poem(theme, current_time)
+    logger.info(f"\n--- {poem.title} (v{poem.version}) ---\n{poem.body}\n")
 
-        if not aris_response and not lena_response:
+    for refinement_round in range(1, MAX_REFINEMENT_ROUNDS + 1):
+        logger.info(f"=== Critique & Debate Round {refinement_round} ===")
+
+        # Step 1: Critic reads the poem
+        critique = critic.critique_poem(poem, current_time)
+        logger.info(f"\n[{critic.definition.name}]:\n{critique.critique_text}\n")
+
+        # Step 2: Debate — poet argues, critic rebuts, up to DEBATE_ROUNDS_MAX rounds
+        debate_history: Dict[int, DebateRound] = {}
+        poet_convinced = False
+
+        for debate_round in range(1, DEBATE_ROUNDS_MAX + 1):
+            logger.info(f"--- Debate Round {debate_round}/{DEBATE_ROUNDS_MAX} ---")
+
+            argument = poet.argue_critique(poem, critique, debate_history, current_time)
+            logger.info(f"[{poet.definition.name}] Argues:\n{argument}\n")
+
+            rebuttal_data = critic.rebut_argument(poem, argument, critique, debate_history, current_time)
+            logger.info(f"[{critic.definition.name}] Rebuts:\n{rebuttal_data.rebuttal}\n")
+            if rebuttal_data.conceded_points:
+                logger.info(f"[{critic.definition.name}] Concedes: {rebuttal_data.conceded_points}")
+
+            debate_history[debate_round] = DebateRound(
+                round_number=debate_round,
+                poet_argument=argument,
+                critic_rebuttal=rebuttal_data.rebuttal,
+            )
+
+            # Poet honestly checks if he's been genuinely convinced
+            poet_convinced = poet.check_conviction(poem, debate_history, current_time)
+            if poet_convinced:
+                logger.info(f"[{poet.definition.name}] Convinced after {debate_round} debate round(s).")
+                break
+
+        if not poet_convinced:
+            logger.info(
+                f"[{poet.definition.name}] Not convinced after {DEBATE_ROUNDS_MAX} debate rounds. "
+                f"Standing by the work."
+            )
+
+        # Step 3: Final decision — poet decides with full debate context
+        refined, poem = poet.decide_to_refine(poem, critique, debate_history, current_time)
+
+        if not refined:
+            logger.info(
+                f"[{poet.definition.name}] Final decision: no revision. "
+                f"Poem stands as '{poem.title}' v{poem.version}."
+            )
             break
 
-        if aris_response:
-            lena_obs = f"{aris.definition.name} says/does: {aris_response['action']}"
-        if lena_response:
-            aris_obs = f"{lena.definition.name} says/does: {lena_response['action']}"
+        logger.info(f"\n--- {poem.title} (v{poem.version}) ---\n{poem.body}\n")
 
-
-def run_simulation(
-    aris: GenerativeAgent,
-    lena: GenerativeAgent,
-    start_time: datetime,
-    total_ticks: int,
-) -> None:
-    current_time = start_time
-
-    for tick in range(total_ticks):
-        current_time += timedelta(minutes=TICK_SIZE_MINUTES)
-        t_str = current_time.strftime("%H:%M")
-
-        for agent in [aris, lena]:
-            if agent.should_skip_tick(current_time):
-                continue
-
-            wake = agent.definition.typical_wake_time
-            past_wake = current_time.time() >= wake
-            if past_wake and not agent.state.current_plan:
-                agent.plan(current_time)
-
-            _apply_current_plan_item(agent, current_time)
-
-        # Co-location triggers dialogue exchange
-        shared_location = (
-            aris.state.current_location
-            and aris.state.current_location == lena.state.current_location
-        )
-        if shared_location:
-            logger.info(f"[{t_str}] Co-location: {aris.state.current_location}")
-            _handle_co_location(aris, lena, current_time)
-
-        logger.info(
-            f"[{t_str}] "
-            f"Aris: {aris.state.current_action} @ {aris.state.current_location} | "
-            f"Lena: {lena.state.current_action} @ {lena.state.current_location}"
-        )
+    logger.info(f"=== Workshop Complete | Final: '{poem.title}' v{poem.version} ===")
+    return poem
 
 
 # ---------------------------------------------------------------------------
@@ -142,36 +131,29 @@ def run_simulation(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # 1. Shared infrastructure — initialized once
     chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
     llm_router    = LLMRouter(anthropic_api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    # 2. Per-agent memory streams
-    aris_memory = MemoryStream(chroma_client, llm_router, ARIS_DEFINITION.agent_id)
-    lena_memory = MemoryStream(chroma_client, llm_router, LENA_DEFINITION.agent_id)
+    poet_memory   = MemoryStream(chroma_client, llm_router, POET_DEFINITION.agent_id)
+    critic_memory = MemoryStream(chroma_client, llm_router, CRITIC_DEFINITION.agent_id)
 
-    # 3. Agent state — seed location from definition
-    aris_state = PersonaState(current_location=ARIS_DEFINITION.starting_location)
-    lena_state = PersonaState(current_location=LENA_DEFINITION.starting_location)
+    poet_state   = PersonaState()
+    critic_state = PersonaState()
 
-    # 4. Agents
-    aris = GenerativeAgent(ARIS_DEFINITION, aris_state, aris_memory, llm_router)
-    lena = GenerativeAgent(LENA_DEFINITION, lena_state, lena_memory, llm_router)
+    poet   = GenerativeAgent(POET_DEFINITION,   poet_state,   poet_memory,   llm_router)
+    critic = GenerativeAgent(CRITIC_DEFINITION, critic_state, critic_memory, llm_router)
 
-    # 5. Seed memories — guard prevents duplicates on restart
-    # Start at 06:00 game-time so both agents' wake times fall within the simulation window
-    start_time = datetime.now().replace(hour=6, minute=0, second=0, microsecond=0)
-    if aris_memory.collection.count() == 0:
-        for mem in ARIS_DEFINITION.seed_memories:
-            aris_memory.add_memory(mem, start_time, is_seed=True)
-        logger.info("Aris seed memories loaded.")
-    if lena_memory.collection.count() == 0:
-        for mem in LENA_DEFINITION.seed_memories:
-            lena_memory.add_memory(mem, start_time, is_seed=True)
-        logger.info("Lena seed memories loaded.")
+    start_time = datetime.now()
+    if poet_memory.collection.count() == 0:
+        for mem in POET_DEFINITION.seed_memories:
+            poet_memory.add_memory(mem, start_time, is_seed=True)
+        logger.info(f"{POET_DEFINITION.name} seed memories loaded.")
+    if critic_memory.collection.count() == 0:
+        for mem in CRITIC_DEFINITION.seed_memories:
+            critic_memory.add_memory(mem, start_time, is_seed=True)
+        logger.info(f"{CRITIC_DEFINITION.name} seed memories loaded.")
 
-    # 6. Run — 96 ticks = 24 game-hours at 15 min/tick
-    run_simulation(aris, lena, start_time, total_ticks=96)
+    run_poetry_workshop(poet, critic, theme="the silence after rain", current_time=start_time)
 
 
 if __name__ == "__main__":
