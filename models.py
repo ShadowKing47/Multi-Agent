@@ -17,11 +17,8 @@ class PersonaDefinition(BaseModel):
 
 
 class PersonaState(BaseModel):
-    current_plan: List[dict] = []
     cumulative_importance: float = 0.0
-    current_location: str = ""
     current_action: str = "idle"
-    current_action_end_time: Optional[datetime] = None
 
 
 class Memory(BaseModel):
@@ -29,3 +26,40 @@ class Memory(BaseModel):
     creation_timestamp: datetime
     last_access_timestamp: datetime
     importance_score: int
+
+
+class Poem(BaseModel):
+    title: str
+    body: str
+    theme: str
+    author_id: str
+    version: int = 1
+
+
+class CritiqueNote(BaseModel):
+    critique_text: str
+    critic_id: str
+    poem_version: int
+
+
+class DebateRound(BaseModel):
+    round_number: int
+    poet_argument: str
+    critic_rebuttal: str
+
+
+class RebuttalResult(BaseModel):
+    rebuttal: str
+    conceded_points: List[str] = []
+
+
+class ConvictionResult(BaseModel):
+    convinced: bool
+    reasoning: str
+
+
+class RefineResult(BaseModel):
+    refine: bool
+    reasoning: str
+    refined_title: Optional[str] = None
+    refined_body: Optional[str] = None
