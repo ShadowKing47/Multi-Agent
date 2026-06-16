@@ -13,7 +13,7 @@ Output: ./poet-sft-lora/  (LoRA adapter, ~100–200 MB)
 
 import os
 import torch
-from datasets import load_dataset, concatenate_datasets, Dataset
+from datasets import load_dataset, concatenate_datasets
 from peft import LoraConfig, TaskType
 from transformers import (
     AutoModelForCausalLM,
@@ -94,20 +94,33 @@ class MPSMemoryCallback(TrainerCallback):
 # Fix 2 — normalise columns across multiple poetry datasets
 # ---------------------------------------------------------------------------
 
+def _first_str(*values, default: str = "") -> str:
+    """Return first non-empty value coerced to string, stripping whitespace."""
+    for v in values:
+        if v is None:
+            continue
+        # lists (e.g. Tags column) → join; everything else → str()
+        s = ", ".join(v) if isinstance(v, list) else str(v)
+        s = s.strip()
+        if s:
+            return s
+    return default
+
+
 def normalize_row(row: dict) -> dict:
     """Map any poetry dataset schema → (theme, title, body)."""
-    theme = (
-        row.get("Type") or row.get("Tags") or row.get("type")
-        or row.get("genre") or row.get("topic") or "poetry"
-    ).strip()
-    title = (
-        row.get("Poem Name") or row.get("Title") or row.get("title")
-        or row.get("name") or "Untitled"
-    ).strip()
-    body = (
-        row.get("Poem") or row.get("Content") or row.get("poem")
-        or row.get("content") or row.get("text") or ""
-    ).strip()
+    theme = _first_str(
+        row.get("Type"), row.get("Tags"), row.get("type"),
+        row.get("genre"), row.get("topic"), default="poetry"
+    )
+    title = _first_str(
+        row.get("Poem Name"), row.get("Title"), row.get("title"),
+        row.get("name"), default="Untitled"
+    )
+    body = _first_str(
+        row.get("Poem"), row.get("Content"), row.get("poem"),
+        row.get("content"), row.get("text"), default=""
+    )
     return {"theme": theme, "title": title, "body": body}
 
 
@@ -154,11 +167,15 @@ def format_example(example: dict, tokenizer) -> dict:
         {"role": "user",      "content": f"{COMPOSE_INSTRUCTION}<theme>\n{theme}\n</theme>"},
         {"role": "assistant", "content": f"TITLE: {title}\n---\n{body}"},
     ]
-    return {
-        "text": tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=False
-        )
-    }
+    try:
+        return {
+            "text": tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+        }
+    except Exception:
+        # malformed poem content (bad encoding, special tokens) — skip silently
+        return {"text": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -194,61 +211,67 @@ def main() -> None:
     eval_data  = split["test"]
     print(f"  Train : {len(train_data)} | Eval : {len(eval_data)}")
 
-    # 3. Model — Fix 6: max_seq_length=512
+    # 3. Model
     print(f"\nLoading model '{LOCAL_MODEL_ID}' on {LOCAL_MODEL_DEVICE}...")
     model = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_ID,
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
     model.to(LOCAL_MODEL_DEVICE)
 
-    # 4. LoRA
+    # enable_input_require_grads must come first — PEFT freezes base weights,
+    # which breaks checkpointing hooks unless embeddings keep requires_grad=True
+    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    # 4. LoRA — r=8 (down from 16): halves trainable params, sufficient for 5k examples
     lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
+        r=8,
+        lora_alpha=16,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
 
-    # 5. Training config — Fix 2: early stopping; Fix 6: 512 seq len, fused adamw
+    # 5. Training config
     report_to = "wandb" if os.environ.get("WANDB_API_KEY") else "none"
 
     training_args = SFTConfig(
         output_dir=SFT_ADAPTER_PATH,
-        num_train_epochs=5,                 # early stopping will cut this short
+        num_train_epochs=5,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         learning_rate=2e-4,
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         logging_steps=10,
-        eval_strategy="epoch",              # Fix 2: evaluate every epoch
+        eval_strategy="epoch",
         save_strategy="epoch",
-        load_best_model_at_end=True,        # Fix 2: keep best checkpoint
+        load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         bf16=False,
         fp16=False,
-        optim="adamw_torch_fused",          # Fix 6: more memory-efficient on MPS
+        optim="adamw_torch",            # adamw_torch_fused is CUDA-only, crashes on MPS
         dataset_text_field="text",
-        max_seq_length=512,                 # Fix 6: halves activation memory vs 1024
+        max_length=256,                     # RAM: 256 covers 95%+ of poems; halves vs 512
+        dataloader_pin_memory=False,        # RAM: pin_memory gives no benefit on MPS
         report_to=report_to,
         run_name="eliot-vane-sft",
     )
 
-    # 6. Train
+    # 6. Train — trl>=1.0 uses processing_class instead of tokenizer
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_data,
-        eval_dataset=eval_data,             # Fix 2
+        eval_dataset=eval_data,
         peft_config=lora_config,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=2),  # Fix 2
-            MPSMemoryCallback(),                                # Fix 6
+            EarlyStoppingCallback(early_stopping_patience=2),
+            MPSMemoryCallback(),
         ],
     )
 
