@@ -1,3 +1,4 @@
+# --- existing ---
 anthropic>=0.30
 langchain-anthropic>=0.2
 langchain-core>=0.2
@@ -10,3 +11,12 @@ cachetools>=5.3
 tenacity>=8.2
 python-dotenv>=1.0
 loguru>=0.7
+
+# --- Phase 0: local inference + SFT ---
+torch==2.12.0
+transformers==5.12.1
+accelerate==1.14.0
+peft==0.19.1
+trl==1.6.0
+datasets==5.0.0
+wandb==0.27.2

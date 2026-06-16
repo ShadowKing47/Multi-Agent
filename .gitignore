@@ -3,3 +3,4 @@ __pycache__/
 .env
 chroma_db/
 .DS_Store
+trash/

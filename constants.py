@@ -19,3 +19,11 @@ RETRIEVAL_WEIGHT_RELEVANCE  = 1.0
 MAX_REFINEMENT_ROUNDS = 5
 DEBATE_ROUNDS_MAX     = 5
 CHROMA_PERSIST_PATH   = "./chroma_db"
+
+# Phase 0 — local inference
+# For 8 GB unified memory use "meta-llama/Llama-3.2-1B-Instruct"
+# For 16 GB+ use "meta-llama/Meta-Llama-3.1-8B-Instruct"
+LOCAL_MODEL_ID     = "Qwen/Qwen2.5-3B-Instruct"
+LOCAL_MODEL_DEVICE = "mps"
+SFT_ADAPTER_PATH   = "./poet-sft-lora"
+SFT_DATASET_ID     = "merve/poetry"
