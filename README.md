@@ -1,37 +1,66 @@
-# Generative Agents
+# Poetry Workshop — Generative Agents + RLAIF
 
-A discrete-time multi-agent simulation based on the [Generative Agents paper](https://arxiv.org/abs/2304.03442). Two AI personas live in a shared world, form memories, plan their days, react to observations, and reflect on experiences.
+A multi-agent poetry workshop built on the [Generative Agents](https://arxiv.org/abs/2304.03442) architecture, evolving toward a full RLAIF (Reinforcement Learning from AI Feedback) training pipeline.
 
-## Personas
+Two agents with persistent memory, reflection, and a structured debate loop. The poet runs on a locally fine-tuned open-weights model. The critic runs on Claude. The long-term goal is to close the loop: use debate outcomes as preference data, train a reward model, and fine-tune the poet via DPO.
 
-| Agent | Age | Occupation | Lifestyle |
-|---|---|---|---|
-| Dr. Aris Thorne | 62 | Historian & Author | Early riser, introverted, prefers quiet |
-| Lena Castillo | 24 | Barista & Community Organizer | Night owl, extroverted, socially driven |
+---
 
-## How It Works
+## Agents
 
-Each tick (15 game-minutes):
-1. **Plan** — at wake time, Sonnet generates an hourly schedule as structured JSON
-2. **Act** — the agent's current action and location are set from the active plan item
-3. **React** — Haiku screens incoming observations cheaply; Sonnet only fires when a reaction is needed
-4. **Reflect** — when cumulative memory importance crosses a threshold, Sonnet synthesizes high-level insights and saves them as new memories
-5. **Co-location** — when both agents share a location, observations are injected into each other's memory stream and up to 2 rounds of dialogue exchange occur per tick
+| Agent | Model | Role |
+|---|---|---|
+| Eliot Vane | Qwen 2.5-3B (local, SFT fine-tuned) | Poet — composes, argues, decides to revise |
+| Dr. Mara Chen | Claude Sonnet 4.6 (API) | Critic — critiques, rebuts, will become reward model |
 
-Memories are stored in ChromaDB with semantic embeddings. Retrieval ranks candidates by a weighted combination of recency, importance, and relevance (all vectorized via Numpy).
+---
+
+## How a Workshop Session Works
+
+```
+Poet composes poem
+        ↓
+Critic critiques
+        ↓
+Debate loop (up to 5 rounds)
+  → Poet argues
+  → Critic rebuts + optionally concedes
+  → Poet checks conviction after each round
+        ↓
+Poet decides autonomously to revise or stand by the work
+        ↓
+(repeat up to 5 refinement rounds)
+```
+
+Both agents maintain a persistent memory stream (ChromaDB). Memories are retrieved by a weighted combination of recency × importance × relevance. When cumulative memory importance crosses a threshold, the agent reflects and distils insights.
+
+---
 
 ## Project Structure
 
 ```
-generative_agents/
-├── constants.py      # All thresholds, model IDs, and config in one place
-├── models.py         # Pydantic schemas: PersonaDefinition, PersonaState, Memory
-├── scoring.py        # Numpy vectorized retrieval scoring + cached importance scoring
-├── llm_router.py     # Sonnet (reasoning) / Haiku (utility) routing
-├── memory.py         # ChromaDB MemoryStream with SentenceTransformer embeddings
-├── agent.py          # GenerativeAgent: plan(), react(), reflect()
-└── main.py           # Persona definitions, initialization, simulation loop
+persona/
+├── constants.py        # All config — model IDs, thresholds, paths
+├── models.py           # Pydantic schemas: Poem, CritiqueNote, DebateRound, etc.
+├── scoring.py          # Numpy vectorized retrieval scoring + TTL-cached importance
+├── llm_router.py       # Routes poet → local model, critic → Claude API
+├── local_llm.py        # LocalLLMClient: loads Qwen on MPS, merges LoRA adapter
+├── memory.py           # ChromaDB MemoryStream with SentenceTransformer embeddings
+├── agent.py            # GenerativeAgent: compose, critique, argue, reflect
+├── main.py             # Persona definitions + workshop orchestration loop
+├── sft_train.py        # Phase 0.2 — SFT baseline training for the poet model
+├── cleanup.py          # Remove downloaded models, caches, and training artefacts
+├── requirements.txt
+├── tests/
+│   ├── test_parsers.py  # Unit tests for all plain-text output parsers
+│   └── test_scoring.py  # Unit tests for retrieval scoring + cache behaviour
+└── trash/               # Planning documents and roadmaps
+    ├── rlaif_roadmap.md
+    ├── updated_RLAIF_roadmap.md
+    └── doubts.md
 ```
+
+---
 
 ## Setup
 
@@ -41,48 +70,101 @@ generative_agents/
 pip install -r requirements.txt
 ```
 
-> **Note:** First run downloads the `all-MiniLM-L6-v2` embedding model (~79MB) to `~/.cache/chroma/`. Cached after that.
+### 2. Configure API key
 
-### 2. Configure API keys
-
-Edit `.env`:
+Create a `.env` file:
 
 ```
 ANTHROPIC_API_KEY=your_anthropic_key
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_langsmith_key
-LANGCHAIN_PROJECT=generative-agents
 ```
 
-LangSmith tracing is optional — remove `LANGCHAIN_TRACING_V2` and `LANGCHAIN_API_KEY` to disable it.
+LangSmith tracing is optional — uncomment the relevant lines in `.env` if you have a key.
 
-### 3. Run
+### 3. Train the SFT baseline (poet model)
+
+Teaches Qwen 2.5-3B to write in Eliot Vane's voice and output format:
+
+```bash
+python sft_train.py
+```
+
+- Downloads `Qwen/Qwen2.5-3B-Instruct` (~6 GB, cached after first run)
+- Loads 3 poetry datasets, samples 5000 examples (seed=42)
+- Trains with LoRA on MPS — ~15–25 min on M-series Apple Silicon
+- Saves adapter to `./poet-sft-lora/`
+
+Skip this step to run the workshop with the base model (no persona fine-tuning).
+
+### 4. Run the workshop
 
 ```bash
 python main.py
 ```
 
-The simulation runs 96 ticks (24 game-hours at 15 min/tick). The `chroma_db/` directory is created automatically on first run and persists across restarts — seed memories are only loaded once.
+`LLMRouter` auto-detects `./poet-sft-lora/` and merges the adapter on load.
+
+### 5. Run tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+---
+
+## Cleanup
+
+Remove accumulated model downloads and caches:
+
+```bash
+python cleanup.py              # shows sizes, asks before deleting
+python cleanup.py --dry-run    # shows sizes only, deletes nothing
+python cleanup.py --yes        # skips confirmation prompt
+python cleanup.py --keep-chroma  # preserves agent memories
+```
+
+---
 
 ## Configuration
 
-All tunable values are in `constants.py`:
+All tunable values in `constants.py`:
 
 | Constant | Default | Effect |
 |---|---|---|
-| `TICK_SIZE_MINUTES` | `15` | Game time per tick |
-| `DIALOGUE_ROUNDS_MAX` | `2` | Max exchange rounds per co-location event |
+| `LOCAL_MODEL_ID` | `Qwen/Qwen2.5-3B-Instruct` | Poet model — swap to 1B for 8 GB RAM |
+| `LOCAL_MODEL_DEVICE` | `mps` | Change to `cpu` if MPS unavailable |
+| `SFT_ADAPTER_PATH` | `./poet-sft-lora` | Where the LoRA adapter is saved/loaded |
+| `DEBATE_ROUNDS_MAX` | `5` | Max poet-critic debate rounds per critique |
+| `MAX_REFINEMENT_ROUNDS` | `5` | Max full critique-debate-revise cycles |
 | `REFLECT_THRESHOLD` | `100` | Cumulative importance that triggers reflection |
 | `REFLECT_INSIGHT_COUNT` | `3` | Insights generated per reflection |
 | `RETRIEVAL_TOP_K` | `10` | Memories retrieved per query |
 | `RECENCY_DECAY` | `0.995` | Per-hour exponential decay on memory recency |
-| `SONNET_MODEL_ID` | `claude-sonnet-4-6` | Reasoning model |
-| `HAIKU_MODEL_ID` | `claude-haiku-4-5-20251001` | Utility model |
 
-## Architecture Decisions
+---
 
-- **Haiku screens `react()` before Sonnet** — ~80% of observations don't require a plan change; Haiku filters them cheaply
-- **Structured JSON from Sonnet** — `plan()` and `react()` prompts enforce a JSON schema, so location is extracted natively with no extra parsing step
-- **Long-action tick skipping** — agents mid-way through a long action (sleeping, reading) skip their LLM call until the action completes
-- **UUID memory IDs** — prevents ID collisions when multiple memories are added at the same timestamp
-- **TTL cache on importance scoring** — repeated memory descriptions skip the Haiku call entirely
+## RLAIF Roadmap
+
+The workshop is Phase 0 of a larger pipeline toward reinforcement learning from AI feedback.
+
+| Phase | Goal | Status |
+|---|---|---|
+| 0 | Local inference + SFT baseline | Done |
+| 1 | Episode logging + arbitrated preference pairs | Not started |
+| 2 | Reward model (embedding + MLP ensemble) | Not started |
+| 3 | Best-of-N sampling with uncertainty gating | Not started |
+| 4 | DPO fine-tuning | Not started |
+| 5 | Human-in-the-loop labelling UI | Not started |
+
+See `trash/updated_RLAIF_roadmap.md` for the full plan.
+
+---
+
+## Architecture Notes
+
+- **Poet runs locally, critic stays on Claude** — critic will eventually become the reward model; keeping it on a strong model maintains critique quality during data collection
+- **Plain-text LLM outputs** — all structured responses use labelled delimiters (`TITLE:`, `DECISION:`, `CONVINCED:`) parsed with simple string operations; no JSON, no schema enforcement at the LLM layer
+- **Prompt injection defence** — XML delimiters on all peer content, regex sanitization, immutable security rule in every system prompt
+- **Prompt caching** — system prompt sent with `cache_control: ephemeral` on the Claude path for warm starts
+- **UUID memory IDs** — prevents collisions when multiple memories are added at the same timestamp
+- **TTL cache on importance scoring** — repeated memory descriptions skip the Haiku call; 1-hour TTL, 1000-entry cap
+- **Reflection recursion guard** — `_reflecting` flag prevents insights from triggering another reflection cascade
