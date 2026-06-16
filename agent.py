@@ -174,11 +174,13 @@ class GenerativeAgent:
         state: PersonaState,
         memory: MemoryStream,
         llm_router: LLMRouter,
+        use_local: bool = False,
     ):
         self.definition = definition
         self.state = state
         self.memory = memory
         self.llm_router = llm_router
+        self.use_local = use_local  # True → route _invoke_reasoning through LocalLLMClient
 
     # ------------------------------------------------------------------
     # Poetry workshop interface
@@ -447,26 +449,38 @@ class GenerativeAgent:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     def _invoke_reasoning(self, prompt: str, cached_prefix: str = "") -> str:
-        user_content = []
-        if cached_prefix:
-            user_content.append({
-                "type": "text",
-                "text": cached_prefix,
-                "cache_control": {"type": "ephemeral"},
-            })
-        user_content.append({"type": "text", "text": prompt})
+        if self.use_local:
+            if not self.llm_router.local_client:
+                raise RuntimeError(
+                    "use_local=True but LLMRouter was not initialized with load_local=True."
+                )
+            # Local models have no cache_control — concatenate prefix directly into user message
+            user_content = f"{cached_prefix}\n\n{prompt}".strip() if cached_prefix else prompt
+            raw = self.llm_router.local_client.generate(
+                system_prompt=self._build_system_prompt(),
+                user_content=user_content,
+            )
+        else:
+            user_content = []
+            if cached_prefix:
+                user_content.append({
+                    "type": "text",
+                    "text": cached_prefix,
+                    "cache_control": {"type": "ephemeral"},
+                })
+            user_content.append({"type": "text", "text": prompt})
+            response = self.llm_router.client.messages.create(
+                model=SONNET_MODEL_ID,
+                max_tokens=4096,
+                system=[{
+                    "type": "text",
+                    "text": self._build_system_prompt(),
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_content}],
+            )
+            raw = response.content[0].text.strip()
 
-        response = self.llm_router.client.messages.create(
-            model=SONNET_MODEL_ID,
-            max_tokens=4096,
-            system=[{
-                "type": "text",
-                "text": self._build_system_prompt(),
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user_content}],
-        )
-        raw = response.content[0].text.strip()
         if not raw:
             raise ValueError("LLM returned empty response — retrying")
         logger.debug(f"[{self.definition.name}] Raw: {raw[:200]}")

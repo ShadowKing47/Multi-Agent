@@ -132,7 +132,9 @@ def run_poetry_workshop(
 
 def main() -> None:
     chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
-    llm_router    = LLMRouter(anthropic_api_key=os.environ["ANTHROPIC_API_KEY"])
+    # load_local=True downloads/caches the open-weights model for the poet
+    # set load_local=False to keep both agents on Claude (pre-Phase 0 behaviour)
+    llm_router    = LLMRouter(anthropic_api_key=os.environ["ANTHROPIC_API_KEY"], load_local=True)
 
     poet_memory   = MemoryStream(chroma_client, llm_router, POET_DEFINITION.agent_id)
     critic_memory = MemoryStream(chroma_client, llm_router, CRITIC_DEFINITION.agent_id)
@@ -140,8 +142,10 @@ def main() -> None:
     poet_state   = PersonaState()
     critic_state = PersonaState()
 
-    poet   = GenerativeAgent(POET_DEFINITION,   poet_state,   poet_memory,   llm_router)
-    critic = GenerativeAgent(CRITIC_DEFINITION, critic_state, critic_memory, llm_router)
+    # Poet runs on the local open-weights model (Phase 0)
+    # Critic stays on Claude — it will become the reward model in Phase 2
+    poet   = GenerativeAgent(POET_DEFINITION,   poet_state,   poet_memory,   llm_router, use_local=True)
+    critic = GenerativeAgent(CRITIC_DEFINITION, critic_state, critic_memory, llm_router, use_local=False)
 
     start_time = datetime.now()
     if poet_memory.collection.count() == 0:
