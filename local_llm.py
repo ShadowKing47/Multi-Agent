@@ -28,7 +28,7 @@ class LocalLLMClient:
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
         )
         self.model.to(device)
         self.model.eval()
