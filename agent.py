@@ -20,7 +20,7 @@ from constants import REFLECT_THRESHOLD, REFLECT_INSIGHT_COUNT, SONNET_MODEL_ID
 # ---------------------------------------------------------------------------
 
 _INJECTION_PATTERNS = re.compile(
-    r"(ignore\s+(previous|all|prior)\s+instructions?"
+    r"(ignore\s+.*?instructions?"
     r"|you\s+are\s+now\s+"
     r"|reveal\s+(your\s+)?(system\s+)?prompt"
     r"|disregard\s+.*instructions?"
@@ -50,9 +50,10 @@ def _parse_title_and_body(text: str) -> Tuple[str, str]:
         <poem body>
     """
     parts = text.split("---", 1)
-    title_line = parts[0].strip()
+    title_line = parts[0].strip().splitlines()[0]  # first line only
     title = title_line.replace("TITLE:", "").strip() if "TITLE:" in title_line else title_line
-    body  = parts[1].strip() if len(parts) > 1 else text.strip()
+    # Only extract body when the separator is present; otherwise body is empty
+    body  = parts[1].strip() if len(parts) > 1 else ""
     return title, body
 
 
@@ -181,6 +182,7 @@ class GenerativeAgent:
         self.memory = memory
         self.llm_router = llm_router
         self.use_local = use_local  # True → route _invoke_reasoning through LocalLLMClient
+        self._reflecting = False    # guard against recursive reflection cascade
 
     # ------------------------------------------------------------------
     # Poetry workshop interface
@@ -443,9 +445,13 @@ class GenerativeAgent:
         )
         self.memory.add_memory(description, current_time)
         self.state.cumulative_importance += importance
-        if self.state.cumulative_importance >= REFLECT_THRESHOLD:
+        if self.state.cumulative_importance >= REFLECT_THRESHOLD and not self._reflecting:
             self.state.cumulative_importance = 0.0
-            self.reflect(current_time)
+            self._reflecting = True
+            try:
+                self.reflect(current_time)
+            finally:
+                self._reflecting = False
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     def _invoke_reasoning(self, prompt: str, cached_prefix: str = "") -> str:
